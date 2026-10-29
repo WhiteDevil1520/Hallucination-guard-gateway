@@ -25,17 +25,29 @@ class ResilientTelemetryTracker:
         self.memory_records: List[TelemetryRecord] = []
         self._connect_db()
 
+    def _clean_db_url(self, raw_url: str) -> str:
+        """Strips out 'psql' prefixes and extra quotes if copied by mistake."""
+        if not raw_url:
+            return ""
+        url = raw_url.strip()
+        # If user accidentally copied `psql 'postgresql://...'`
+        if url.startswith("psql"):
+            url = url[4:].strip()
+        # Remove quotes
+        url = url.strip("'\"")
+        # Ensure sslmode for cloud databases
+        if url and "sslmode=" not in url:
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}sslmode=require"
+        return url
+
     def _connect_db(self):
         """Attempts to connect to PostgreSQL with SSL support."""
-        db_url = settings.database_url or os.getenv("DATABASE_URL", "")
+        raw_url = settings.database_url or os.getenv("DATABASE_URL", "")
+        db_url = self._clean_db_url(raw_url)
         
         try:
             if db_url:
-                # Ensure SSL mode for cloud databases like Neon
-                if "sslmode=" not in db_url:
-                    separator = "&" if "?" in db_url else "?"
-                    db_url = f"{db_url}{separator}sslmode=require"
-                
                 self.conn = psycopg2.connect(db_url)
             else:
                 self.conn = psycopg2.connect(
@@ -69,14 +81,15 @@ class ResilientTelemetryTracker:
             self.conn = None
 
     def record(self, item: TelemetryRecord):
-        """Always stores in memory buffer AND attempts PostgreSQL persistence."""
-        # 1. Always save in memory buffer first (guarantees dashboard never loses data!)
+        """Always stores in memory buffer AND writes to PostgreSQL."""
+        # 1. Always save in memory buffer
         self.memory_records.append(item)
 
-        # 2. Try saving to PostgreSQL
+        # 2. Reconnect if disconnected
         if not self.conn or self.conn.closed:
             self._connect_db()
 
+        # 3. Write to PostgreSQL
         if self.conn and not self.conn.closed:
             try:
                 with self.conn.cursor() as cur:
@@ -101,7 +114,10 @@ class ResilientTelemetryTracker:
 
     def get_summary(self) -> Dict:
         """Fetches from PostgreSQL if connected, otherwise uses memory buffer."""
-        # Check DB first
+        # Check PostgreSQL
+        if not self.conn or self.conn.closed:
+            self._connect_db()
+
         if self.conn and not self.conn.closed:
             try:
                 with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -116,7 +132,7 @@ class ResilientTelemetryTracker:
                     """)
                     summary = cur.fetchone()
 
-                    if summary["total_requests"] > 0:
+                    if summary and summary["total_requests"] > 0:
                         cur.execute("""
                             SELECT prompt, latency_ms, cost_usd, 
                                    flagged_injection AS injection_blocked,
@@ -152,7 +168,7 @@ class ResilientTelemetryTracker:
             except Exception as e:
                 print(f"Error reading DB: {e}. Falling back to memory.")
 
-        # In-Memory Buffer fallback
+        # Fallback to Memory
         if not self.memory_records:
             return {"total_requests": 0, "status": "No requests logged yet."}
 
