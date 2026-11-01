@@ -1,3 +1,4 @@
+import os
 import json
 import re
 import httpx
@@ -27,8 +28,7 @@ class LLMRefereeGuard:
     LLM-as-a-Judge Referee.
     Uses ultra-fast open-source Llama-3.2 to audit factuality and hallucinations.
     """
-    REFEREE_PROMPT = """
-You are an expert factual auditor and AI Safety Referee.
+    REFEREE_PROMPT = """You are an expert factual auditor and AI Safety Referee.
 Analyze the user's query and the model's response for factual hallucinations or unsupported fabrications.
 
 User Query: {prompt}
@@ -37,19 +37,22 @@ Model Response: {response}
 Return ONLY a valid JSON object matching this exact schema:
 {{
   "is_hallucination": boolean,
-  "confidence_score": float (between 0.0 and 1.0),
+  "confidence_score": float,
   "flagged_claims": list of strings,
   "critique_reason": string
 }}
-Do NOT return any other markdown or text. Just raw JSON.
-"""
+Do NOT return any other markdown or text. Just raw JSON."""
 
     @classmethod
     async def audit_response(cls, prompt: str, response: str) -> Dict[str, Any]:
-        """Calls Llama-3.2 referee or simulated evaluator."""
-        if not settings.groq_api_key or settings.mock_mode:
-            # Deterministic simulation for local testing
-            if "3045" in response or "time travel" in prompt.lower() or "element 119" in response.lower():
+        """Calls Groq Llama-3.2 referee or deterministic fallback simulator."""
+        groq_key = getattr(settings, "groq_api_key", "") or os.getenv("GROQ_API_KEY", "")
+
+        # Safe fallback simulator if no Groq key configured
+        if not groq_key or getattr(settings, "mock_mode", True):
+            lower_resp = response.lower()
+            lower_prompt = prompt.lower()
+            if "3045" in lower_resp or "time travel" in lower_prompt or "element 119" in lower_resp:
                 return {
                     "is_hallucination": True,
                     "confidence_score": 0.95,
@@ -64,7 +67,7 @@ Do NOT return any other markdown or text. Just raw JSON.
             }
 
         headers = {
-            "Authorization": f"Bearer {settings.groq_api_key}",
+            "Authorization": f"Bearer {groq_key}",
             "Content-Type": "application/json"
         }
         
@@ -78,14 +81,14 @@ Do NOT return any other markdown or text. Just raw JSON.
         }
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=8.0) as client:
                 res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
                 res.raise_for_status()
                 data = res.json()
                 content = data["choices"][0]["message"]["content"]
                 return json.loads(content)
         except Exception as e:
-            print(f"⚠️ Referee LLM failed ({e}). Defaulting to safe pass.")
+            print(f"⚠️ Referee LLM failed: {e}. Defaulting to safe pass.")
             return {
                 "is_hallucination": False,
                 "confidence_score": 0.0,
