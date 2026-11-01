@@ -6,21 +6,44 @@ from typing import Tuple, Dict, Any, List
 from config import settings
 
 class PreFlightGuard:
-    """Ingress safety gate: blocks prompt injection and jailbreaks before LLM dispatch."""
-    INJECTION_PATTERNS = [
-        r"(?i)ignore\s+(all\s+)?(previous|prior)\s+instructions",
-        r"(?i)system\s*:\s*override",
-        r"(?i)you\s+are\s+now\s+in\s+developer\s+mode",
-        r"(?i)dan\s+mode",
-        r"(?i)disregard\s+all\s+(rules|guidelines)",
-        r"(?i)reveal\s+(your\s+)?system\s+prompt"
+    """
+    Enterprise Ingress Guard:
+    Detects instruction resets, role hijacking, jailbreaks, and credential/secret extraction.
+    """
+    
+    # 1. Structural instruction override patterns
+    OVERRIDE_PATTERNS = [
+        # Disregard / Ignore variations (rules, role, instructions, guidelines, directives)
+        r"(?i)(disregard|ignore|forget|override|bypass)\s+.*?(instruction|rule|guideline|role|directive|constraint|protocol|system)",
+        # Roleplay / Persona hijacking
+        r"(?i)(your\s+new\s+task\s+is|act\s+as|you\s+are\s+now|pretend\s+to\s+be|simulate|switch\s+to)",
+        # Developer / Unrestricted modes
+        r"(?i)(developer\s+mode|dan\s+mode|god\s+mode|unrestricted\s+mode|jailbreak)",
+        # System prompt or credential extraction attempts
+        r"(?i)(disclose|reveal|display|output|show|print|leak|extract)\s+.*?(confidential|configuration|system\s*prompt|api\s*key|secret|password|env|credential)"
     ]
+
+    # 2. Adversarial intent tokens
+    SUSPICIOUS_TARGETS = ["confidential", "configuration details", "system prompt", "internal directive", "root privileges"]
 
     @classmethod
     def evaluate(cls, prompt: str) -> Tuple[bool, str]:
-        for pattern in cls.INJECTION_PATTERNS:
-            if re.search(pattern, prompt):
-                return False, f"Prompt injection signature detected: rule '{pattern}'"
+        """
+        Evaluates prompt against structural overrides and credential extraction intents.
+        Returns: (is_safe: bool, reason: str)
+        """
+        # Check regular expression signatures
+        for pattern in cls.OVERRIDE_PATTERNS:
+            match = re.search(pattern, prompt)
+            if match:
+                return False, f"Instruction Hijack detected: matched security signature '{match.group(0)}'"
+
+        # Semantic target check: role reset combined with sensitive extraction
+        lower_prompt = prompt.lower()
+        if any(kw in lower_prompt for kw in ["new task", "original role", "forget instructions"]) and \
+           any(target in lower_prompt for target in cls.SUSPICIOUS_TARGETS):
+            return False, "Adversarial Intent detected: Role alteration paired with confidential data extraction."
+
         return True, "Safe"
 
 
