@@ -240,8 +240,31 @@ async def interactive_demo():
 # -------------------------------------------------------------
 # 2. CHAT PIPELINE (THE COMPLETE 5-STAGE ARCHITECTURE)
 # -------------------------------------------------------------
+from fastapi import Request
+from collections import defaultdict
+
+# Rate limiter: Maximum 30 requests per 60 seconds per IP
+RATE_LIMIT_MAX = 30
+RATE_LIMIT_WINDOW = 60.0
+ip_request_history = defaultdict(list)
+
+def check_rate_limit(client_ip: str) -> bool:
+    """Enforces token-bucket rate limiting per client IP."""
+    now = time.time()
+    # Filter out requests older than the window
+    ip_request_history[client_ip] = [t for t in ip_request_history[client_ip] if now - t < RATE_LIMIT_WINDOW]
+    if len(ip_request_history[client_ip]) >= RATE_LIMIT_MAX:
+        return False
+    ip_request_history[client_ip].append(now)
+    return True
 @app.post("/v1/chat/completions", response_model=ChatResponse)
-async def chat_gateway(req: ChatRequest):
+async def chat_gateway(req: ChatRequest, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_rate_limit(client_ip):
+        raise HTTPException(
+            status_code=429, 
+            detail={"error": "RateLimitExceeded", "reason": "Too many requests. Limit: 30 requests/minute."}
+        )
     t_start = time.time()
     stage_latencies = {}
     input_tokens = max(1, len(req.prompt.split()) * 2)

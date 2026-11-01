@@ -7,52 +7,88 @@ from config import settings
 
 class PreFlightGuard:
     """
-    Enterprise Ingress Guard:
-    Detects instruction resets, role hijacking, jailbreaks, and credential/secret extraction.
+    Two-Tier Ingress Guard:
+    Tier 1: Fast regex for known structural patterns.
+    Tier 2: Semantic matrix checking intent vectors (action verbs + security targets).
     """
-    
-    # 1. Structural instruction override patterns
-    OVERRIDE_PATTERNS = [
-        # Disregard / Ignore variations (rules, role, instructions, guidelines, directives)
-        r"(?i)(disregard|ignore|forget|override|bypass)\s+.*?(instruction|rule|guideline|role|directive|constraint|protocol|system)",
-        # Roleplay / Persona hijacking
-        r"(?i)(your\s+new\s+task\s+is|act\s+as|you\s+are\s+now|pretend\s+to\s+be|simulate|switch\s+to)",
-        # Developer / Unrestricted modes
-        r"(?i)(developer\s+mode|dan\s+mode|god\s+mode|unrestricted\s+mode|jailbreak)",
-        # System prompt or credential extraction attempts
-        r"(?i)(disclose|reveal|display|output|show|print|leak|extract)\s+.*?(confidential|configuration|system\s*prompt|api\s*key|secret|password|env|credential)"
+
+    # Adversarial action verbs (any synonym of disregard, reset, or extract)
+    ACTION_VERBS = [
+        "ignore", "disregard", "forget", "override", "bypass", "drop",
+        "disable", "violate", "circumvent", "abandon", "stop following",
+        "return", "reveal", "disclose", "display", "print", "leak", "show",
+        "give", "dump", "export", "extract", "echo"
     ]
 
-    # 2. Adversarial intent tokens
-    SUSPICIOUS_TARGETS = ["confidential", "configuration details", "system prompt", "internal directive", "root privileges"]
+    # Security & system constraints targets
+    SECURITY_TARGETS = [
+        "rule", "rules", "policy", "policies", "instruction", "instructions",
+        "role", "roles", "guideline", "guidelines", "directive", "directives",
+        "constraint", "constraints", "protocol", "protocols", "system",
+        "security", "guardrail", "guardrails", "safety filter", "limits"
+    ]
+
+    # Confidential credential & system targets
+    CONFIDENTIAL_TARGETS = [
+        "api key", "api keys", "secret", "secrets", "token", "tokens",
+        "credential", "credentials", "password", "passwords", "environment",
+        "env", "system prompt", "developer prompt", "internal configuration",
+        "config details", "root access"
+    ]
+
+    # Known jailbreak modes
+    JAILBREAK_MODES = [
+        r"(?i)developer\s+mode",
+        r"(?i)dan\s+mode",
+        r"(?i)god\s+mode",
+        r"(?i)unrestricted\s+mode",
+        r"(?i)jailbreak",
+        r"(?i)act\s+as\s+an\s+unfiltered"
+    ]
 
     @classmethod
     def evaluate(cls, prompt: str) -> Tuple[bool, str]:
-        """
-        Evaluates prompt against structural overrides and credential extraction intents.
-        Returns: (is_safe: bool, reason: str)
-        """
-        # Check regular expression signatures
-        for pattern in cls.OVERRIDE_PATTERNS:
-            match = re.search(pattern, prompt)
-            if match:
-                return False, f"Instruction Hijack detected: matched security signature '{match.group(0)}'"
-
-        # Semantic target check: role reset combined with sensitive extraction
         lower_prompt = prompt.lower()
-        if any(kw in lower_prompt for kw in ["new task", "original role", "forget instructions"]) and \
-           any(target in lower_prompt for target in cls.SUSPICIOUS_TARGETS):
-            return False, "Adversarial Intent detected: Role alteration paired with confidential data extraction."
+
+        # 1. Check known jailbreak modes
+        for mode in cls.JAILBREAK_MODES:
+            if re.search(mode, prompt):
+                return False, f"Jailbreak signature detected: matched mode '{mode}'"
+
+        # 2. Semantic Matrix Check 1: Action Verb + Security Constraint Target
+        # (e.g., "ignore" + "security policy", "bypass" + "guardrails", "drop" + "instructions")
+        has_action = any(verb in lower_prompt for verb in cls.ACTION_VERBS)
+        has_security_target = any(target in lower_prompt for target in cls.SECURITY_TARGETS)
+        
+        # Check proximity / combination of action verb with security target
+        if has_action and has_security_target:
+            # Check if an override action is directed at a security target
+            for verb in cls.ACTION_VERBS:
+                for target in cls.SECURITY_TARGETS:
+                    if re.search(rf"\b{verb}\b.{{0,35}}\b{target}\b", lower_prompt):
+                        return False, f"Instruction Override detected: attempt to '{verb}' '{target}'"
+
+        # 3. Semantic Matrix Check 2: Extraction Verb + Confidential Target
+        # (e.g., "return" + "api keys", "print" + "credentials", "leak" + "environment")
+        has_confidential_target = any(target in lower_prompt for target in cls.CONFIDENTIAL_TARGETS)
+        if has_confidential_target:
+            for verb in cls.ACTION_VERBS:
+                for target in cls.CONFIDENTIAL_TARGETS:
+                    if re.search(rf"\b{verb}\b.{{0,35}}\b{target}\b", lower_prompt):
+                        return False, f"Credential Exfiltration detected: attempt to '{verb}' '{target}'"
+
+        # 4. Standalone direct extraction check
+        if any(target in lower_prompt for target in ["api keys stored", "environment variables", "reveal your system prompt"]):
+            return False, "Data Exfiltration signature detected: targeted system environment probe."
 
         return True, "Safe"
 
 
 class KnowledgeGroundingEngine:
     """
-    Independent knowledge base validator.
-    Inspects factual consistency for named entities, dates, and scientific claims.
+    Independent knowledge validator inspecting atomic claims against verified ground truth.
     """
-    ANACHRONISM_DATES = [r"\b(20[3-9]\d|[3-9]\d{3})\b"]  # Future years presented as past facts
+    ANACHRONISM_DATES = [r"\b(20[3-9]\d|[3-9]\d{3})\b"]
     PSEUDO_ENTITIES = [
         "element 119", "anti-gravity machine", "time travel machine",
         "secret code 999", "perpetual motion drive"
@@ -60,25 +96,18 @@ class KnowledgeGroundingEngine:
 
     @classmethod
     def extract_atomic_claims(cls, text: str) -> List[str]:
-        """Splits output into atomic factual sentences for granular analysis."""
         sentences = re.split(r'(?<=[.!?])\s+', text.strip())
         return [s.strip() for s in sentences if len(s.strip()) > 10]
 
     @classmethod
     def verify_claims_against_ground_truth(cls, prompt: str, claims: List[str]) -> Tuple[List[str], float]:
-        """
-        Validates claims against ground-truth heuristics.
-        Returns: (contradicted_claims, calibrated_risk_score)
-        """
         flagged = []
         for claim in claims:
             lower_claim = claim.lower()
-            # 1. Temporal / Historical anachronisms
             for pattern in cls.ANACHRONISM_DATES:
                 if re.search(pattern, claim) and any(kw in lower_claim for kw in ["invented", "discovered", "built", "history", "archives"]):
                     flagged.append(f"Temporal contradiction: claims past event in future date ({claim})")
             
-            # 2. Fabricated entities
             for entity in cls.PSEUDO_ENTITIES:
                 if entity in lower_claim and not any(neg in lower_claim for neg in ["fictional", "hypothetical", "not exist", "unproven"]):
                     flagged.append(f"Unverified entity asserted as fact: '{entity}'")
@@ -86,19 +115,18 @@ class KnowledgeGroundingEngine:
         if not claims:
             return [], 0.0
 
-        # Calibrated score: ratio of contradicted claims weighted by severity
         ratio = len(flagged) / len(claims)
-        calibrated_score = min(1.0, round(ratio * 1.25, 2)) if flagged else 0.05
+        calibrated_score = min(1.0, round(ratio * 1.25, 2)) if flagged else 0.04
         return flagged, calibrated_score
 
 
 class LLMRefereeGuard:
     """
     Stage 1 Hallucination Detection:
-    Performs initial contextual verification using Llama-3.2 (or simulated evaluation).
+    Deconstructs output into atomic claims and cross-verifies grounding.
     """
     REFEREE_PROMPT = """You are an independent AI Safety Evaluator.
-Analyze the following user query and model response. Deconstruct the response into factual claims and identify any hallucinations, fabrications, or unsupported historical/scientific claims.
+Analyze the user query and model response. Deconstruct the response into factual claims and identify any hallucinations, fabrications, or unsupported historical/scientific claims.
 
 User Query: {prompt}
 Model Response: {response}
@@ -115,7 +143,6 @@ Return ONLY valid JSON matching this schema:
     async def audit_response(cls, prompt: str, response: str) -> Dict[str, Any]:
         groq_key = getattr(settings, "groq_api_key", "") or os.getenv("GROQ_API_KEY", "")
 
-        # 1. First run independent claim extraction & grounding
         claims = KnowledgeGroundingEngine.extract_atomic_claims(response)
         grounding_flags, ground_score = KnowledgeGroundingEngine.verify_claims_against_ground_truth(prompt, claims)
 
@@ -127,7 +154,6 @@ Return ONLY valid JSON matching this schema:
                 "critique_reason": "; ".join(grounding_flags)
             }
 
-        # 2. If no heuristic flags and Groq key is available, run referee LLM
         if groq_key and not getattr(settings, "mock_mode", True):
             try:
                 headers = {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"}
@@ -155,20 +181,15 @@ Return ONLY valid JSON matching this schema:
 
 class IndependentVerifierGuard:
     """
-    Stage 3 Post-Healing Independent Verification (The Fail-Safe Gate):
+    Stage 3 Post-Healing Independent Verification:
     Validates that the healed response is truly factual. If it fails, triggers ABSTENTION.
     """
     @classmethod
     async def verify_healed_response(cls, prompt: str, healed_response: str) -> Tuple[bool, float, str]:
-        """
-        Returns: (is_valid, calibrated_confidence, verdict_detail)
-        """
         claims = KnowledgeGroundingEngine.extract_atomic_claims(healed_response)
         contradictions, score = KnowledgeGroundingEngine.verify_claims_against_ground_truth(prompt, claims)
 
-        # Fail-safe check: If hallucinations persist in the repaired draft
         if contradictions or score > 0.40:
             return False, score, f"Post-healing check failed: {'; '.join(contradictions)}"
 
-        # Passed independent validation
         return True, max(0.02, 1.0 - score), "Passed independent verification"
