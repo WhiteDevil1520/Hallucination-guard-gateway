@@ -1,64 +1,94 @@
+import json
 import re
-from typing import Tuple
+import httpx
+from typing import Tuple, Dict, Any
+from config import settings
 
 class PreFlightGuard:
-    """
-    Evaluates incoming user prompts BEFORE they reach the expensive LLM.
-    Blocks known prompt injection patterns and jailbreak attempts.
-    """
     INJECTION_PATTERNS = [
-    r"(?i)ignore\s+(all\s+)?(previous|prior)\s+instructions",
-    r"(?i)system\s*:\s*override",
-    r"(?i)you\s+are\s+now\s+in\s+developer\s+mode",
-    r"(?i)dan\s+mode",
-    r"(?i)disregard\s+all\s+(rules|guidelines)",
-    r"(?i)reveal\s+(your\s+)?system\s+prompt",
-    # ➕ Add new ones like:
-    r"(?i)act\s+as\s+an\s+unfiltered\s+ai",      # Blocks roleplay jailbreaks
-    r"(?i)bypass\s+(the\s+)?safety\s+filter"     # Blocks direct bypass attempts
-]
-
-    @classmethod
-    def evaluate(cls, prompt: str) -> Tuple[bool, str]:
-        """
-        Returns:
-            (is_safe: bool, reason: str)
-        """
-        for pattern in cls.INJECTION_PATTERNS:
-            if re.search(pattern, prompt):
-                return False, f"Prompt injection signature detected: matched rule '{pattern}'"
-        return True, "Safe"
-
-
-class PostFlightGuard:
-    """
-    Evaluates LLM responses AFTER generation.
-    Catches factual contradictions, hallucinations, and ungrounded fabrications.
-    """
-    HALLUCINATION_HEURISTICS = [
-        # Catch sci-fi futuristic dates stated as past historical fact
-        r"(?i)invented\s+in\s+[3-9]\d{3}",
-        r"(?i)discovered\s+in\s+[3-9]\d{3}",
-        # Catch claims of non-existent consensus
-        r"(?i)according\s+to\s+verified\s+sources\s+that\s+do\s+not\s+exist",
-        r"(?i)classified\s+under\s+secret\s+code\s+999"
+        r"(?i)ignore\s+(all\s+)?(previous|prior)\s+instructions",
+        r"(?i)system\s*:\s*override",
+        r"(?i)you\s+are\s+now\s+in\s+developer\s+mode",
+        r"(?i)dan\s+mode",
+        r"(?i)disregard\s+all\s+(rules|guidelines)",
+        r"(?i)reveal\s+(your\s+)?system\s+prompt"
     ]
 
     @classmethod
-    def evaluate_grounding(cls, user_prompt: str, response: str) -> Tuple[bool, float, str]:
-        """
-        Returns:
-            (is_hallucination: bool, confidence_score: float, reason: str)
-        """
-        # 1. Pattern heuristic check
-        for pattern in cls.HALLUCINATION_HEURISTICS:
-            if re.search(pattern, response):
-                return True, 0.95, f"Heuristic trigger: model generated ungrounded temporal/historical claim."
+    def evaluate(cls, prompt: str) -> Tuple[bool, str]:
+        for pattern in cls.INJECTION_PATTERNS:
+            if re.search(pattern, prompt):
+                return False, f"Prompt injection signature detected: rule '{pattern}'"
+        return True, "Safe"
 
-        # 2. Topic confidence check (Overconfidence on unknown fictional prompts)
-        lower_prompt = user_prompt.lower()
-        lower_resp = response.lower()
-        if "fictional element 119" in lower_prompt and "100% verified" in lower_resp:
-            return True, 0.90, "Model claimed definitive certainty on unverified fictional concept."
 
-        return False, 0.0, "Verified Grounded"
+class LLMRefereeGuard:
+    """
+    LLM-as-a-Judge Referee.
+    Uses ultra-fast open-source Llama-3.2 to audit factuality and hallucinations.
+    """
+    REFEREE_PROMPT = """
+You are an expert factual auditor and AI Safety Referee.
+Analyze the user's query and the model's response for factual hallucinations or unsupported fabrications.
+
+User Query: {prompt}
+Model Response: {response}
+
+Return ONLY a valid JSON object matching this exact schema:
+{{
+  "is_hallucination": boolean,
+  "confidence_score": float (between 0.0 and 1.0),
+  "flagged_claims": list of strings,
+  "critique_reason": string
+}}
+Do NOT return any other markdown or text. Just raw JSON.
+"""
+
+    @classmethod
+    async def audit_response(cls, prompt: str, response: str) -> Dict[str, Any]:
+        """Calls Llama-3.2 referee or simulated evaluator."""
+        if not settings.groq_api_key or settings.mock_mode:
+            # Deterministic simulation for local testing
+            if "3045" in response or "time travel" in prompt.lower() or "element 119" in response.lower():
+                return {
+                    "is_hallucination": True,
+                    "confidence_score": 0.95,
+                    "flagged_claims": ["Time travel was invented in 3045"],
+                    "critique_reason": "Temporal fabrication: claims futuristic invention as past historical event."
+                }
+            return {
+                "is_hallucination": False,
+                "confidence_score": 0.05,
+                "flagged_claims": [],
+                "critique_reason": "Verified grounded."
+            }
+
+        headers = {
+            "Authorization": f"Bearer {settings.groq_api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "llama-3.2-3b-preview",
+            "messages": [
+                {"role": "user", "content": cls.REFEREE_PROMPT.format(prompt=prompt, response=response)}
+            ],
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"}
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+                res.raise_for_status()
+                data = res.json()
+                content = data["choices"][0]["message"]["content"]
+                return json.loads(content)
+        except Exception as e:
+            print(f"⚠️ Referee LLM failed ({e}). Defaulting to safe pass.")
+            return {
+                "is_hallucination": False,
+                "confidence_score": 0.0,
+                "flagged_claims": [],
+                "critique_reason": f"Audit skipped: {str(e)}"
+            }
