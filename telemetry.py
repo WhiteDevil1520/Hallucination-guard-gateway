@@ -39,7 +39,7 @@ class ResilientTelemetryTracker:
             url = f"{url}{separator}sslmode=require"
         return url
 
-   def _connect_db(self):
+    def _connect_db(self):
         raw_url = getattr(settings, "database_url", "") or os.getenv("DATABASE_URL", "")
         db_url = self._clean_db_url(raw_url)
         try:
