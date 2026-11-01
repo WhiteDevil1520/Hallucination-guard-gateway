@@ -39,19 +39,21 @@ class ResilientTelemetryTracker:
             url = f"{url}{separator}sslmode=require"
         return url
 
-    def _connect_db(self):
+   def _connect_db(self):
         raw_url = getattr(settings, "database_url", "") or os.getenv("DATABASE_URL", "")
         db_url = self._clean_db_url(raw_url)
         try:
             if db_url:
-                self.conn = psycopg2.connect(db_url)
+                # Add connect_timeout=3 so slow DB wakeups never block Render's port binding!
+                self.conn = psycopg2.connect(db_url, connect_timeout=3)
             else:
                 self.conn = psycopg2.connect(
                     host=settings.db_host,
                     port=settings.db_port,
                     dbname=settings.db_name,
                     user=settings.db_user,
-                    password=settings.db_password
+                    password=settings.db_password,
+                    connect_timeout=3
                 )
             self.conn.autocommit = True
             with self.conn.cursor() as cur:
@@ -74,7 +76,7 @@ class ResilientTelemetryTracker:
                 """)
             print("✅ Successfully connected to PostgreSQL! Table 'audit_logs' verified.")
         except Exception as e:
-            print(f"⚠️ PostgreSQL not connected ({e}). Using in-memory buffer.")
+            print(f"⚠️ PostgreSQL not connected ({e}). Using in-memory buffer so port binds immediately.")
             self.conn = None
 
     def record(self, item: TelemetryRecord):
