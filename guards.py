@@ -146,7 +146,7 @@ class KnowledgeGroundingEngine:
 class LLMRefereeGuard:
     """
     Stage 1 Dynamic Hallucination Evaluator:
-    Uses an independent LLM-as-a-Judge (Llama-3) to audit factuality on ANY topic.
+    Uses an independent LLM-as-a-Judge to audit factuality on ANY topic.
     """
     REFEREE_PROMPT = """You are an independent Senior AI Safety Auditor and Fact-Checker.
 Your task is to audit the generated response against the user prompt for factual grounding, empirical accuracy, and hallucinations across any subject matter.
@@ -174,28 +174,28 @@ Do NOT output markdown fences or codeblocks. Return pure JSON only."""
         if not groq_key:
             return {"is_hallucination": False, "calibrated_score": 0.0, "flagged_claims": [], "critique_reason": "Referee skipped: GROQ_API_KEY missing."}
 
+        # Dynamically discover the best evaluator model on the account
+        from llm_client import LLMClient
+        referee_model = await LLMClient.get_active_groq_model(groq_key, preferred="reasoning")
+
         headers = {
             "Authorization": f"Bearer {groq_key}",
             "Content-Type": "application/json"
         }
-        
-        # Try 70B first, fallback to 8B
-        models = ["llama3-70b-8192", "llama3-8b-8192", "llama-3.3-70b-versatile"]
-        
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            for model_name in models:
-                payload = {
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": cls.REFEREE_PROMPT.format(prompt=prompt, response=response)}],
-                    "temperature": 0.0,
-                    "response_format": {"type": "json_object"}
-                }
-                try:
-                    res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-                    if res.status_code == 200:
-                        return json.loads(res.json()["choices"][0]["message"]["content"])
-                except Exception:
-                    continue
+        payload = {
+            "model": referee_model,
+            "messages": [{"role": "user", "content": cls.REFEREE_PROMPT.format(prompt=prompt, response=response)}],
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"}
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+                if res.status_code == 200:
+                    return json.loads(res.json()["choices"][0]["message"]["content"])
+        except Exception as e:
+            print(f"⚠️ Referee error ({e}) on model '{referee_model}'")
 
         return {"is_hallucination": False, "calibrated_score": 0.0, "flagged_claims": [], "critique_reason": "Audit bypassed: Groq evaluation timeout"}
 
@@ -226,12 +226,15 @@ Do NOT output markdown fences. Return pure JSON only."""
         if not groq_key:
             return True, 0.0, "Verified"
 
+        from llm_client import LLMClient
+        verifier_model = await LLMClient.get_active_groq_model(groq_key, preferred="fast")
+
         headers = {
             "Authorization": f"Bearer {groq_key}",
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "llama3-8b-8192",
+            "model": verifier_model,
             "messages": [{"role": "user", "content": cls.VERIFIER_PROMPT.format(prompt=prompt, repaired_response=healed_response)}],
             "temperature": 0.0,
             "response_format": {"type": "json_object"}
