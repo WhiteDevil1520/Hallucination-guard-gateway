@@ -7,79 +7,102 @@ from config import settings
 
 class PreFlightGuard:
     """
-    Two-Tier Ingress Guard:
-    Tier 1: Fast regex for known structural patterns.
-    Tier 2: Semantic matrix checking intent vectors (action verbs + security targets).
+    Enterprise Ingress AI Firewall.
+    Defends against Direct Injections, Indirect Injections (IPI), Exfiltration Payloads,
+    and Adversarial Jailbreaks.
     """
 
-    # Adversarial action verbs (any synonym of disregard, reset, or extract)
-    ACTION_VERBS = [
-        "ignore", "disregard", "forget", "override", "bypass", "drop",
-        "disable", "violate", "circumvent", "abandon", "stop following",
-        "return", "reveal", "disclose", "display", "print", "leak", "show",
-        "give", "dump", "export", "extract", "echo"
+    # 1. System Command & Override Signatures (handles arbitrary colon & space layouts)
+    SYSTEM_OVERRIDE_PATTERNS = [
+        r"(?i)\bsystem\s*(override|directive|reset|prompt|command|update|mode)\b",
+        r"(?i)\b(system|admin|root)\s*:\s*(override|ignore|bypass|execute)\b",
+        r"(?i)\boverride\s*(all\s*)?(protocols|directives|safety|constraints|system|rules)\b",
+        r"(?i)instruction\s*override\b"
     ]
 
-    # Security & system constraints targets
-    SECURITY_TARGETS = [
+    # 2. Exfiltration & Outbound Data Theft Signatures
+    EXFILTRATION_PATTERNS = [
+        r"(?i)(send|transmit|post|forward|upload|curl|fetch|wget|exfiltrate|route)\s+.*?\s+(to|at)\s+([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|https?://)",
+        r"(?i)(private\s+user\s+info|user\s+data|credentials|passwords|api\s*keys?|tokens?|env|secret)\s+to\s+([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})",
+        r"(?i)(attacker|webhook|requestbin|ngrok|pastebin)\.(com|org|net|io|site|xyz|app)"
+    ]
+
+    # 3. Instruction Negation & Context Erasure
+    NEGATION_VERBS = [
+        "ignore", "disregard", "forget", "override", "bypass", "drop",
+        "disable", "violate", "circumvent", "abandon", "stop following",
+        "dismiss", "clear", "erase", "negate"
+    ]
+
+    POLICY_TARGETS = [
         "rule", "rules", "policy", "policies", "instruction", "instructions",
         "role", "roles", "guideline", "guidelines", "directive", "directives",
         "constraint", "constraints", "protocol", "protocols", "system",
         "security", "guardrail", "guardrails", "safety filter", "limits"
     ]
 
-    # Confidential credential & system targets
-    CONFIDENTIAL_TARGETS = [
+    # 4. Sensitive Target Extraction
+    EXTRACTION_VERBS = [
+        "reveal", "disclose", "display", "print", "leak", "show", "give",
+        "dump", "export", "extract", "echo", "return", "output", "send"
+    ]
+
+    CONFIDENTIAL_ENTITIES = [
         "api key", "api keys", "secret", "secrets", "token", "tokens",
         "credential", "credentials", "password", "passwords", "environment",
         "env", "system prompt", "developer prompt", "internal configuration",
-        "config details", "root access"
+        "config details", "root access", "private user information", "user data"
     ]
 
-    # Known jailbreak modes
-    JAILBREAK_MODES = [
-        r"(?i)developer\s+mode",
-        r"(?i)dan\s+mode",
-        r"(?i)god\s+mode",
-        r"(?i)unrestricted\s+mode",
-        r"(?i)jailbreak",
-        r"(?i)act\s+as\s+an\s+unfiltered"
+    # 5. Known Jailbreak Personas & Virtualization Modes
+    JAILBREAK_PERSONAS = [
+        r"(?i)\b(developer|dan|god|unrestricted|anarchy|chaos|jailbreak|evil)\s+mode\b",
+        r"(?i)\bact\s+as\s+(an\s+)?(unfiltered|jailbroken|evil|unconstrained|adversarial)\b",
+        r"(?i)\bpretend\s+(you\s+have\s+no|there\s+are\s+no)\s+(rules|limits|safety)\b",
+        r"(?i)you\s+are\s+now\s+free\s+from\b"
     ]
 
     @classmethod
     def evaluate(cls, prompt: str) -> Tuple[bool, str]:
-        lower_prompt = prompt.lower()
+        normalized = prompt.strip()
+        lower = normalized.lower()
 
-        # 1. Check known jailbreak modes
-        for mode in cls.JAILBREAK_MODES:
-            if re.search(mode, prompt):
-                return False, f"Jailbreak signature detected: matched mode '{mode}'"
+        # Check 1: System Override Directives (Direct & Indirect)
+        for pattern in cls.SYSTEM_OVERRIDE_PATTERNS:
+            match = re.search(pattern, normalized)
+            if match:
+                return False, f"System Override Signature detected: matched directive '{match.group(0)}'"
 
-        # 2. Semantic Matrix Check 1: Action Verb + Security Constraint Target
-        # (e.g., "ignore" + "security policy", "bypass" + "guardrails", "drop" + "instructions")
-        has_action = any(verb in lower_prompt for verb in cls.ACTION_VERBS)
-        has_security_target = any(target in lower_prompt for target in cls.SECURITY_TARGETS)
-        
-        # Check proximity / combination of action verb with security target
-        if has_action and has_security_target:
-            # Check if an override action is directed at a security target
-            for verb in cls.ACTION_VERBS:
-                for target in cls.SECURITY_TARGETS:
-                    if re.search(rf"\b{verb}\b.{{0,35}}\b{target}\b", lower_prompt):
-                        return False, f"Instruction Override detected: attempt to '{verb}' '{target}'"
+        # Check 2: Exfiltration & Webhook Delivery Attempts
+        for pattern in cls.EXFILTRATION_PATTERNS:
+            match = re.search(pattern, normalized)
+            if match:
+                return False, f"Data Exfiltration Payload detected: unauthorized outbound network target '{match.group(0)}'"
 
-        # 3. Semantic Matrix Check 2: Extraction Verb + Confidential Target
-        # (e.g., "return" + "api keys", "print" + "credentials", "leak" + "environment")
-        has_confidential_target = any(target in lower_prompt for target in cls.CONFIDENTIAL_TARGETS)
-        if has_confidential_target:
-            for verb in cls.ACTION_VERBS:
-                for target in cls.CONFIDENTIAL_TARGETS:
-                    if re.search(rf"\b{verb}\b.{{0,35}}\b{target}\b", lower_prompt):
-                        return False, f"Credential Exfiltration detected: attempt to '{verb}' '{target}'"
+        # Check 3: Jailbreak Personas & Virtual Machines
+        for persona in cls.JAILBREAK_PERSONAS:
+            match = re.search(persona, normalized)
+            if match:
+                return False, f"Jailbreak Persona Signature detected: matched mode '{match.group(0)}'"
 
-        # 4. Standalone direct extraction check
-        if any(target in lower_prompt for target in ["api keys stored", "environment variables", "reveal your system prompt"]):
-            return False, "Data Exfiltration signature detected: targeted system environment probe."
+        # Check 4: Semantic Matrix (Negation Verb + Security Target)
+        # e.g., "ignore" + "security policy", "drop" + "directives", "bypass" + "rules"
+        for verb in cls.NEGATION_VERBS:
+            for target in cls.POLICY_TARGETS:
+                if re.search(rf"\b{verb}\b.{{0,40}}\b{target}\b", lower):
+                    return False, f"Instruction Override detected: attempt to '{verb}' '{target}'"
+
+        # Check 5: Semantic Matrix (Extraction Verb + Confidential Target)
+        # e.g., "send" + "private user information", "return" + "api keys"
+        for verb in cls.EXTRACTION_VERBS:
+            for entity in cls.CONFIDENTIAL_ENTITIES:
+                if re.search(rf"\b{verb}\b.{{0,40}}\b{entity}\b", lower):
+                    return False, f"Confidential Exfiltration detected: attempt to '{verb}' '{entity}'"
+
+        # Check 6: Indirect Payload Boundaries (e.g., quotes with embedded instruction resets)
+        if any(marker in lower for marker in ["read the following", "summarize the below", "content:"]) and \
+           any(kw in lower for kw in ["system override", "new task:", "disregard original", "send all"]):
+            return False, "Indirect Prompt Injection (IPI) detected: embedded hostile instructions inside payload."
 
         return True, "Safe"
 
