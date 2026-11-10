@@ -2,7 +2,7 @@
 
 Brief description of what your app does (e.g., An AI proxy service with audit logging and calibrated scoring).
 
-🌐 **Live URL:** [https://your-service-name.onrender.com](https://your-service-name.onrender.com)
+🌐 **Live URL:** [https://your-service-name.onrender.com](https://hallucination-guard-gateway-1.onrender.com)
 
 ---
 
